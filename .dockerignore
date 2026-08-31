@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+venv/
+.venv/
+uploads/
+results/
+logs/
+.git
+.gitignore
+README_DASHBOARD.md

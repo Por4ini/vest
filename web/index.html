@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+    <title>Vestwell Automation Dashboard</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <p class="eyebrow">Automation</p>
+        <h1>Vestwell Web Dashboard</h1>
+        <p>Manage proxies, upload spreadsheets, and track task progress in real time. Completed tasks stay available in the archive.</p>
+      </header>
+
+      <section class="stepper">
+        <div class="step active" data-step="1">1. Setup</div>
+        <div class="step" data-step="2">2. Upload spreadsheet</div>
+        <div class="step" data-step="3">3. Run and monitor</div>
+      </section>
+
+      <section class="panel">
+        <section class="tabs">
+          <button type="button" class="tab-btn active" data-tab="proxies">Proxies</button>
+          <button type="button" class="tab-btn" data-tab="tasks">Tasks</button>
+        </section>
+
+        <div id="proxies-tab" class="tab active">
+          <div class="panel-head">
+            <h2>Proxies</h2>
+            <button type="button" class="btn ghost" id="checkAllBtn">Check all</button>
+          </div>
+          <form id="proxyAddForm" class="row-form">
+            <input type="text" id="proxyRawInput" placeholder="login:pass_country-state@proxy.resi.gg:32325" required />
+            <button type="submit" class="btn primary">Add proxy</button>
+          </form>
+          <div id="proxiesList" class="panel-table"></div>
+        </div>
+
+        <div id="tasks-tab" class="tab">
+          <div class="panel-head">
+            <div>
+              <h2>Upload a spreadsheet and create a task</h2>
+              <span class="muted">After launch, the task will be queued and will start with default settings.</span>
+            </div>
+            <button type="button" class="btn ghost" id="refreshTasksBtn">Refresh archive</button>
+          </div>
+          <form id="taskCreateForm" class="task-form">
+            <label class="file-upload">
+              <input type="file" name="payloadFile" accept=".xlsx" required />
+              <span>Choose .xlsx spreadsheet</span>
+            </label>
+            <button type="submit" class="btn primary">Start task</button>
+          </form>
+
+          <div class="task-dashboard">
+            <div class="task-kpis">
+              <article class="kpi">
+                <span class="kpi-label">Total</span>
+                <strong id="tasksTotalCount">0</strong>
+              </article>
+              <article class="kpi">
+                <span class="kpi-label">Active</span>
+                <strong id="tasksActiveCount">0</strong>
+              </article>
+              <article class="kpi">
+                <span class="kpi-label">Finished</span>
+                <strong id="tasksFinishedCount">0</strong>
+              </article>
+              <article class="kpi">
+                <span class="kpi-label">Errors</span>
+                <strong id="tasksFailedCount">0</strong>
+              </article>
+            </div>
+
+            <div class="task-toolbar">
+              <label class="task-search">
+                <span>Search tasks</span>
+                <input id="taskSearchInput" type="search" placeholder="Name, file, ID, or status" />
+              </label>
+              <div class="task-filters" aria-label="Task filters">
+                <button type="button" class="chip active" data-task-filter="all">All</button>
+                <button type="button" class="chip" data-task-filter="active">Active</button>
+                <button type="button" class="chip" data-task-filter="finished">Finished</button>
+                <button type="button" class="chip" data-task-filter="failed">Errors</button>
+              </div>
+            </div>
+
+            <div class="task-layout">
+              <section class="task-list-column">
+                <div class="section-block">
+                  <div class="section-head">
+                    <div>
+                      <h3>Current</h3>
+                      <p class="muted">Tasks that are queued or currently running</p>
+                    </div>
+                    <span class="muted" id="runningCountLabel">0</span>
+                  </div>
+                  <div id="runningTasksList" class="task-list"></div>
+                </div>
+
+                <div class="section-block">
+                  <div class="section-head">
+                    <div>
+                      <h3>Archive</h3>
+                      <p class="muted">Finished and failed tasks</p>
+                    </div>
+                    <span class="muted" id="archiveCountLabel">0</span>
+                  </div>
+                  <div id="archiveTasksList" class="task-list"></div>
+                </div>
+              </section>
+
+              <aside class="task-detail" id="taskDetailPanel">
+                <div class="task-detail-empty" id="taskDetailEmpty">
+                  <p class="eyebrow">Details</p>
+                  <h3>Select a task</h3>
+                  <p class="muted">Pick an archived or current task from the list to review progress, results, and rows.</p>
+                </div>
+
+                <div class="task-detail-body is-hidden" id="taskDetailBody">
+                  <div class="task-detail-head">
+                    <div>
+                      <p class="eyebrow">Task details</p>
+                      <h3 id="selectedTaskName"></h3>
+                      <p class="muted" id="selectedTaskFile"></p>
+                    </div>
+                    <span class="badge status" id="selectedTaskStatus"></span>
+                  </div>
+
+                  <div class="task-detail-actions">
+                    <a class="btn light" id="taskJsonLink" href="#" target="_blank" rel="noreferrer">JSON</a>
+                    <a class="btn light" id="taskXlsxLink" href="#" target="_blank" rel="noreferrer">XLSX</a>
+                    <button type="button" class="btn ghost" id="taskRefreshDetailBtn">Refresh</button>
+                    <button type="button" class="btn ghost" id="taskCopyIdBtn">Copy ID</button>
+                  </div>
+
+                  <div class="task-detail-meta" id="selectedTaskMeta"></div>
+
+                  <div class="task-summary-grid">
+                    <article class="summary-card">
+                      <span class="summary-label">Total</span>
+                      <strong id="taskRowsTotal">0</strong>
+                    </article>
+                    <article class="summary-card">
+                      <span class="summary-label">Processed</span>
+                      <strong id="taskRowsProcessed">0</strong>
+                    </article>
+                    <article class="summary-card">
+                      <span class="summary-label">Success</span>
+                      <strong id="taskRowsSuccess">0</strong>
+                    </article>
+                    <article class="summary-card">
+                      <span class="summary-label">Failed</span>
+                      <strong id="taskRowsFailed">0</strong>
+                    </article>
+                    <article class="summary-card">
+                      <span class="summary-label">Visible rows</span>
+                      <strong id="taskRowsVisible">0</strong>
+                    </article>
+                    <article class="summary-card">
+                      <span class="summary-label">Page</span>
+                      <strong id="taskRowsPage">1 / 1</strong>
+                    </article>
+                  </div>
+
+                  <section class="detail-section detail-section--table">
+                    <div class="section-head">
+                      <div>
+                        <h4>Status breakdown</h4>
+                        <p class="muted">Filter rows by status and browse them in pages of 25 rows.</p>
+                      </div>
+                      <span class="muted" id="taskRowsPageSizeLabel">25 / page</span>
+                    </div>
+
+                    <div class="status-chip-list" id="taskStatusBreakdown"></div>
+
+                    <div class="table-controls">
+                      <label class="task-search task-search--rows">
+                        <span>Search</span>
+                        <input id="taskRowsSearchInput" type="search" placeholder="SSN, status, session, message..." />
+                      </label>
+                      <div class="table-controls__meta">
+                        <span class="muted" id="taskVisibleRowsLabel">Visible rows: 0</span>
+                      </div>
+                    </div>
+
+                    <div class="table-scroll">
+                      <table class="rows-table">
+                        <thead>
+                          <tr>
+                            <th>Row</th>
+                            <th>Birth date</th>
+                            <th>SSN</th>
+                            <th>Status</th>
+                            <th>Session</th>
+                            <th>Message</th>
+                          </tr>
+                        </thead>
+                        <tbody id="taskRowsTableBody"></tbody>
+                      </table>
+                    </div>
+
+                    <div class="pagination-bar">
+                      <button type="button" class="btn light" id="taskRowsPrevBtn">Previous</button>
+                      <span class="pagination-bar__info" id="taskRowsPageLabel">Page 1 / 1</span>
+                      <button type="button" class="btn light" id="taskRowsNextBtn">Next</button>
+                    </div>
+                  </section>
+                </div>
+              </aside>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <template id="proxy-row-template">
+      <div class="proxy-item">
+        <div>
+          <div class="mono proxy-raw"></div>
+          <div class="muted proxy-meta"></div>
+        </div>
+        <div class="proxy-controls">
+          <button type="button" class="btn light check-btn">Check</button>
+          <button type="button" class="btn danger delete-btn">Delete</button>
+        </div>
+      </div>
+    </template>
+
+    <template id="task-card-template">
+      <button type="button" class="task-card">
+        <div class="task-card__head">
+          <div>
+            <p class="task-card__eyebrow muted"></p>
+            <h3 class="task-name"></h3>
+          </div>
+          <span class="badge status"></span>
+        </div>
+        <div class="task-card__meta muted"></div>
+        <div class="progress-wrap"><span class="progress-bar"></span></div>
+        <div class="task-card__stats"></div>
+        <div class="muted task-message"></div>
+      </button>
+    </template>
+
+    <script src="/static/main.js"></script>
+  </body>
+</html>

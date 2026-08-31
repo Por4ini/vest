@@ -29,6 +29,7 @@ def bypass_aws_waf(url):
         # Extract the aws-waf-token cookie
         cookies = context.cookies()
         waf_token = None
+        
         for cookie in cookies:
             if "aws-waf-token" in cookie["name"]:
                 waf_token = cookie["value"]

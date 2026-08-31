@@ -1,0 +1,8 @@
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+python-multipart==0.0.20
+playwright==1.56.0
+playwright-stealth==1.0.6
+openpyxl==3.1.5
+psycopg[binary]==3.2.9
+setuptools==75.1.0
