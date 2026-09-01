@@ -24,6 +24,7 @@
         <section class="tabs">
           <button type="button" class="tab-btn active" data-tab="proxies">Proxies</button>
           <button type="button" class="tab-btn" data-tab="tasks">Tasks</button>
+          <button type="button" class="tab-btn" data-tab="telegram-settings">Telegram settings</button>
         </section>
 
         <div id="proxies-tab" class="tab active">
@@ -212,6 +213,29 @@
               </aside>
             </div>
           </div>
+        </div>
+
+        <div id="telegram-settings-tab" class="tab">
+          <div class="panel-head">
+            <div>
+              <h2>Telegram settings</h2>
+              <span class="muted">Set defaults used by tasks. Values are stored in the database and also apply as run defaults.</span>
+            </div>
+          </div>
+          <form id="telegramSettingsForm" class="task-form">
+            <div class="form-grid">
+              <label>
+                <span>Telegram chat id</span>
+                <input id="telegramSettingsChatIdInput" type="text" name="telegramChatId" placeholder="telegram chat id" />
+              </label>
+              <label>
+                <span>Telegram bot token</span>
+                <input id="telegramSettingsBotTokenInput" type="text" name="telegramBotToken" placeholder="bot token" />
+              </label>
+            </div>
+            <button type="submit" class="btn primary">Save settings</button>
+            <span id="telegramSettingsStatus" class="muted"></span>
+          </form>
         </div>
       </section>
     </main>

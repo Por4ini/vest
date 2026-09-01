@@ -93,7 +93,8 @@ def _select_user_agent() -> str:
 
 
 def _normalize_header(name: str | None) -> str:
-    return str(name or "").strip().lower().replace(" ", "").replace("_", "")
+    normalized = "".join(str(name or "").strip().lower().split())
+    return normalized.replace("_", "")
 
 
 def _normalize_cell_value(value):
@@ -122,6 +123,8 @@ def _to_payload_row(row_cells: dict[str, str]) -> dict[str, str] | None:
         or row_cells.get("socialsecurity")
         or row_cells.get("ssnumber")
         or row_cells.get("social")
+        or row_cells.get("shaloshola")
+        or row_cells.get("sholashola")
     )
 
     if not (birth and last and ssn):
@@ -132,6 +135,22 @@ def _to_payload_row(row_cells: dict[str, str]) -> dict[str, str] | None:
         "lastName": last,
         "ssn": ssn,
     }
+
+
+def _normalize_status_code(status_code: int | None) -> str:
+    if status_code == 403:
+        return "registered"
+    if status_code == 201:
+        return "unregistered"
+    if status_code == 200:
+        return "ok"
+    if status_code is None:
+        return "unknown"
+    return str(status_code)
+
+
+def _is_verify_ok(status_code: int | None) -> bool:
+    return status_code in {200, 403}
 
 
 def _load_payload_rows(xlsx_path: str, max_rows: int | None = None) -> list[dict]:
@@ -532,6 +551,10 @@ def _build_csv_row(result: dict) -> dict:
         "source_row": result.get("source_row"),
         "proxy": result.get("proxy"),
         "public_ip_via_proxy": result.get("public_ip_via_proxy"),
+        "registration_status": (
+            result.get("verify", {}).get("status_label")
+            or _normalize_status_code(result.get("verify", {}).get("status"))
+        ),
         "a": heap.get("a"),
         "u": heap.get("u"),
         "v": heap.get("v"),
@@ -597,7 +620,8 @@ def _verify_register_post(
             raw = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
             return {
                 "status": status,
-                "ok": response.status == 200,
+                "ok": _is_verify_ok(status),
+                "status_label": _normalize_status_code(status),
                 "body": raw,
                 "content_type": response.headers.get("Content-Type"),
                 "set_cookie": response.headers.get("Set-Cookie"),
@@ -607,7 +631,8 @@ def _verify_register_post(
         body = error.read().decode("utf-8", errors="replace")
         return {
             "status": status,
-            "ok": False,
+            "ok": _is_verify_ok(status),
+            "status_label": _normalize_status_code(status),
             "body": body,
             "content_type": error.headers.get("Content-Type") if error.headers else None,
             "set_cookie": error.headers.get("Set-Cookie") if error.headers else None,
@@ -615,7 +640,8 @@ def _verify_register_post(
     except Exception as exc:
         return {
             "status": None,
-            "ok": False,
+            "ok": _is_verify_ok(None),
+            "status_label": _normalize_status_code(None),
             "body": str(exc),
             "content_type": None,
             "set_cookie": None,

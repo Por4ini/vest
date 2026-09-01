@@ -36,6 +36,8 @@ LOG_DIR = Path(os.getenv("LOG_DIR", str(BASE_DIR / "logs")))
 STATIC_DIR = BASE_DIR / "web"
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://vestwell:vestwell@db:5432/vestwell")
+TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+TELEGRAM_CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 
 for directory in (UPLOAD_DIR, RESULT_DIR, LOG_DIR):
     directory.mkdir(parents=True, exist_ok=True)
@@ -111,6 +113,36 @@ def _coerce_status_code(value: Any) -> int | None:
         return None
 
 
+def _clean_telegram_chat_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    candidate = str(value).strip()
+    if not candidate:
+        return None
+    if candidate == "None":
+        return None
+    if candidate.startswith("+"):
+        candidate = candidate[1:]
+    if candidate.lstrip("-").isdigit():
+        return candidate
+    return None
+
+
+def _clean_telegram_bot_token(value: Any) -> str | None:
+    if value is None:
+        return None
+    token = str(value).strip()
+    if not token or token == "None":
+        return None
+    return token
+
+
+def _build_status_message(status_label: str, row: Any | None = None) -> str:
+    if row is None:
+        return status_label
+    return f"{status_label} row={row}"
+
+
 @contextmanager
 def db_connection():
     conn = connect(DATABASE_URL)
@@ -173,6 +205,8 @@ def _run_db_migrations() -> None:
                 )
                 """
             )
+            cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS telegram_chat_id TEXT")
+            cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS telegram_bot_token TEXT")
 
             cur.execute(
                 """
@@ -205,6 +239,16 @@ def _run_db_migrations() -> None:
 
             cur.execute("CREATE INDEX IF NOT EXISTS idx_task_rows_task_id ON task_rows(task_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_task_events_task_id ON task_events(task_id)")
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
 
 
 def _seed_default_proxies() -> None:
@@ -271,6 +315,8 @@ def _serialize_task(task: dict[str, Any], rows: list[dict[str, Any]]) -> dict[st
         "last_message": task["last_message"],
         "rows": rows,
         "result_file_json": task["result_file_json"],
+        "telegram_chat_id": task.get("telegram_chat_id"),
+        "telegram_bot_token": task.get("telegram_bot_token"),
         "error": task.get("last_error"),
     }
 
@@ -373,10 +419,11 @@ def _db_list_tasks(limit: int | None = None) -> list[dict[str, Any]]:
                 SELECT id, name, filename, status, created_at, started_at, completed_at,
                        updated_at, pause_min, pause_max, max_rows, total_rows, processed_rows,
                        ok_rows, error_rows, current_row, use_proxy, proxy_count,
-                       result_file_json, last_message, last_error
+                       result_file_json, last_message, last_error,
+                       telegram_chat_id, telegram_bot_token
                 FROM tasks
                 ORDER BY created_at DESC
-            """
+                """
             params: tuple[Any, ...] = ()
             if limit and limit > 0:
                 query += " LIMIT %s"
@@ -395,7 +442,8 @@ def _db_get_task_record(task_id: str) -> dict[str, Any] | None:
                 SELECT id, name, filename, status, created_at, started_at, completed_at,
                        updated_at, pause_min, pause_max, max_rows, total_rows, processed_rows,
                        ok_rows, error_rows, current_row, use_proxy, proxy_count,
-                       result_file_json, payload_path, last_message, last_error
+                       result_file_json, payload_path, last_message, last_error,
+                       telegram_chat_id, telegram_bot_token
                 FROM tasks
                 WHERE id=%s
                 LIMIT 1
@@ -404,6 +452,56 @@ def _db_get_task_record(task_id: str) -> dict[str, Any] | None:
             )
             row = cur.fetchone()
     return dict(row) if row else None
+
+
+def _db_get_latest_telegram_config() -> tuple[str | None, str | None]:
+    with db_connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT telegram_chat_id, telegram_bot_token
+                FROM tasks
+                WHERE telegram_chat_id IS NOT NULL OR telegram_bot_token IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            )
+            row = cur.fetchone()
+    if not row:
+        return None, None
+    return row.get("telegram_chat_id"), row.get("telegram_bot_token")
+
+
+def _db_get_setting(key: str) -> str | None:
+    with db_connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT value FROM app_settings WHERE key = %s LIMIT 1", (key,))
+            row = cur.fetchone()
+    return row["value"] if row else None
+
+
+def _db_set_setting(key: str, value: str | None) -> None:
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            if value is None:
+                cur.execute("DELETE FROM app_settings WHERE key=%s", (key,))
+                return
+            cur.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (key) DO UPDATE SET
+                    value = EXCLUDED.value,
+                    updated_at = NOW()
+                """,
+                (key, value),
+            )
+
+
+def _db_get_telegram_defaults() -> tuple[str | None, str | None]:
+    chat_id = _clean_telegram_chat_id(_db_get_setting("telegram_chat_id"))
+    bot_token = _clean_telegram_bot_token(_db_get_setting("telegram_bot_token"))
+    return chat_id, bot_token
 
 
 def _db_get_task(task_id: str) -> dict[str, Any] | None:
@@ -444,6 +542,10 @@ def _row_status_key(processed_row: dict[str, Any] | None) -> str:
     if not processed_row:
         return "queued"
     status_code = _coerce_status_code(processed_row.get("status"))
+    if status_code == 403:
+        return "registered"
+    if status_code == 201:
+        return "unregistered"
     if processed_row.get("ok"):
         return "ok"
     if status_code == 202:
@@ -458,6 +560,10 @@ def _row_status_label(status_key: str, status_code: int | None) -> str:
         return "Queued"
     if status_key == "ok":
         return "OK"
+    if status_key == "registered":
+        return "Registered"
+    if status_key == "unregistered":
+        return "Unregistered"
     if status_key == "retry":
         return "Retry"
     if status_key == "unknown":
@@ -478,6 +584,8 @@ def _db_create_task(
     proxy_count: int,
     payload_path: str,
     result_json: str,
+    telegram_chat_id: str | None,
+    telegram_bot_token: str | None,
 ) -> dict[str, Any]:
     with db_connection() as conn:
         with conn.cursor() as cur:
@@ -485,11 +593,25 @@ def _db_create_task(
                 """
                 INSERT INTO tasks (
                     id, name, filename, status, created_at, pause_min, pause_max, max_rows,
-                    use_proxy, proxy_count, result_file_json, payload_path, last_message
+                    use_proxy, proxy_count, result_file_json, payload_path, telegram_chat_id,
+                    telegram_bot_token, last_message
                 )
-                VALUES (%s, %s, %s, 'queued', NOW(), %s, %s, %s, %s, %s, %s, %s, 'Awaiting start')
+                VALUES (%s, %s, %s, 'queued', NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Awaiting start')
                 """,
-                (task_id, name, filename, pause_min, pause_max, max_rows, use_proxy, proxy_count, result_json, payload_path),
+                (
+                    task_id,
+                    name,
+                    filename,
+                    pause_min,
+                    pause_max,
+                    max_rows,
+                    use_proxy,
+                    proxy_count,
+                    result_json,
+                    payload_path,
+                    telegram_chat_id,
+                    telegram_bot_token,
+                ),
             )
 
     task = _db_get_task(task_id)
@@ -660,10 +782,12 @@ def _db_update_task_metrics(task_id: str, event: dict[str, Any]) -> None:
             if etype == "row_finished":
                 ok = bool(event.get("ok"))
                 status_code = _coerce_status_code(event.get("status"))
+                status_key = _row_status_key({"ok": ok, "status": status_code})
+                status_label = _row_status_label(status_key, status_code)
                 if status_code == 202:
                     last_message = f"HTTP 202 for row {event.get('row')} - retry required"
                 else:
-                    last_message = f"{'OK' if ok else 'ERROR'} row={event.get('row')}"
+                    last_message = _build_status_message(status_label, event.get("row"))
                 cur.execute(
                     """
                     UPDATE tasks
@@ -718,6 +842,127 @@ def _db_update_task_metrics(task_id: str, event: dict[str, Any]) -> None:
                     (event.get("error"), now, task_id),
                 )
                 return
+
+
+def _load_task_result_rows(task: dict[str, Any]) -> list[dict[str, Any]]:
+    result_path = task.get("result_file_json")
+    if not result_path or not Path(result_path).exists():
+        return []
+
+    with open(result_path, "r", encoding="utf-8") as file:
+        rows = json.load(file)
+
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list):
+        return []
+    return rows
+
+
+def _build_task_xlsx_bytes(task_id: str, result_rows: list[dict[str, Any]] | None = None) -> bytes:
+    try:
+        from openpyxl import Workbook
+    except ImportError as exc:
+        raise RuntimeError("openpyxl is required to export XLSX") from exc
+
+    if result_rows is None:
+        task = _db_get_task(task_id)
+        if not task:
+            raise RuntimeError("Task not found")
+        result_rows = _load_task_result_rows(task)
+
+    flat_rows = [_build_csv_row(result) for result in result_rows]
+    headers: list[str] = []
+    for row in flat_rows:
+        for key in row.keys():
+            if key not in headers:
+                headers.append(key)
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Results"
+
+    if headers:
+        sheet.append(headers)
+        for row in flat_rows:
+            sheet.append([row.get(header, "") for header in headers])
+
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def _post_telegram_document(
+    chat_id: str,
+    token: str,
+    file_bytes: bytes,
+    filename: str,
+    caption: str | None = None,
+) -> None:
+    boundary = uuid.uuid4().hex
+    api_url = f"https://api.telegram.org/bot{token}/sendDocument"
+    parts: list[bytes] = []
+
+    def add_field(name: str, value: str) -> None:
+        parts.append(f"--{boundary}\r\n".encode())
+        parts.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
+        parts.append(f"{value}\r\n".encode())
+
+    def add_file(name: str, filename_value: str, content: bytes) -> None:
+        parts.append(f"--{boundary}\r\n".encode())
+        parts.append(
+            f'Content-Disposition: form-data; name="{name}"; filename="{filename_value}"\r\n'.encode()
+        )
+        parts.append(b"Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n")
+        parts.append(content)
+        parts.append(b"\r\n")
+
+    add_field("chat_id", chat_id)
+    if caption:
+        add_field("caption", caption)
+    add_file("document", filename, file_bytes)
+    parts.append(f"--{boundary}--\r\n".encode())
+    payload = b"".join(parts)
+
+    req = urllib.request.Request(api_url, data=payload, method="POST")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    with urllib.request.urlopen(req, timeout=30) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+        data = json.loads(raw or "{}")
+        if not data.get("ok"):
+            raise RuntimeError(f"Telegram API error: {data}")
+
+
+def _send_task_result_to_telegram(
+    task_id: str,
+    task: dict[str, Any],
+    telegram_chat_id: str | None,
+    telegram_bot_token: str | None,
+) -> None:
+    chat_id = (
+        _clean_telegram_chat_id(telegram_chat_id)
+        or _clean_telegram_chat_id(task.get("telegram_chat_id"))
+        or _clean_telegram_chat_id(TELEGRAM_CHAT_ID)
+    )
+    token = (
+        _clean_telegram_bot_token(telegram_bot_token)
+        or _clean_telegram_bot_token(task.get("telegram_bot_token"))
+        or _clean_telegram_bot_token(TELEGRAM_BOT_TOKEN)
+    )
+    if not chat_id or not token:
+        return
+
+    result_rows = _load_task_result_rows(task)
+    if not result_rows:
+        logger.info("Task %s has no rows for Telegram output", task_id)
+        return
+
+    xlsx_bytes = _build_task_xlsx_bytes(task_id, result_rows=result_rows)
+    total = task.get("total_rows") or len(result_rows)
+    ok_rows = task.get("ok_rows") or 0
+    error_rows = task.get("error_rows") or 0
+    caption = f"Task {task_id} completed. total={total}, ok={ok_rows}, errors={error_rows}"
+    _post_telegram_document(chat_id, token, xlsx_bytes, f"{task_id}_result.xlsx", caption=caption)
 
 
 def _check_proxy_sync(raw: str, timeout: int = 12) -> dict[str, Any]:
@@ -801,6 +1046,8 @@ def _run_task_background(
     use_proxy: bool,
     proxy_raws: list[str],
     result_json: str,
+    telegram_chat_id: str | None = None,
+    telegram_bot_token: str | None = None,
 ) -> None:
     with TASK_LOCK:
         ACTIVE_TASKS.setdefault(task_id, {"events": queue.Queue(maxsize=250), "created": _utcnow()})
@@ -847,6 +1094,24 @@ def _run_task_background(
         }
         _on_task_event(task_id, final_event)
     else:
+        task_record = _db_get_task(task_id) or {}
+        try:
+            _send_task_result_to_telegram(
+                task_id=task_id,
+                task=task_record,
+                telegram_chat_id=telegram_chat_id,
+                telegram_bot_token=telegram_bot_token,
+            )
+        except Exception as error:
+            logger.exception("Telegram notification failed for task %s", task_id)
+            _on_task_event(
+                task_id,
+                {
+                    "type": "task_notification_failed",
+                    "task_id": task_id,
+                    "error": f"Telegram notification failed: {error}",
+                },
+            )
         _on_task_event(task_id, final_event)
     finally:
         with TASK_LOCK:
@@ -955,6 +1220,8 @@ async def create_task(
     pauseMax: float = Form(3.5),
     maxRows: int | None = Form(None),
     proxyIds: list[str] = Form(default=[]),
+    telegramChatId: str = Form(""),
+    telegramBotToken: str = Form(""),
 ):
     filename = (payloadFile.filename or "table.xlsx").strip()
     if not filename.lower().endswith(".xlsx"):
@@ -965,6 +1232,24 @@ async def create_task(
     pause_max = _safe_float(pauseMax, 3.5)
     if pause_max < pause_min:
         pause_max = pause_min
+
+    resolved_chat_id = _clean_telegram_chat_id(telegramChatId)
+    resolved_token = _clean_telegram_bot_token(telegramBotToken)
+    if not resolved_chat_id or not resolved_token:
+        default_chat_id, default_token = _db_get_telegram_defaults()
+        latest_chat_id, latest_token = _db_get_latest_telegram_config()
+        if not resolved_chat_id:
+            resolved_chat_id = (
+                default_chat_id
+                or _clean_telegram_chat_id(latest_chat_id)
+                or _clean_telegram_chat_id(TELEGRAM_CHAT_ID)
+            )
+        if not resolved_token:
+            resolved_token = (
+                default_token
+                or _clean_telegram_bot_token(latest_token)
+                or _clean_telegram_bot_token(TELEGRAM_BOT_TOKEN)
+            )
 
     selected_proxy_ids = [pid for pid in proxyIds if pid]
     all_proxies = [p for p in _db_list_proxies() if p["enabled"]]
@@ -990,6 +1275,8 @@ async def create_task(
         proxy_count=len(selected_raws),
         payload_path=str(upload_path),
         result_json=str(result_json_path),
+        telegram_chat_id=resolved_chat_id,
+        telegram_bot_token=resolved_token,
     )
 
     with TASK_LOCK:
@@ -1006,11 +1293,35 @@ async def create_task(
             "use_proxy": useProxy,
             "proxy_raws": selected_raws,
             "result_json": str(result_json_path),
+            "telegram_chat_id": resolved_chat_id,
+            "telegram_bot_token": resolved_token,
         },
         daemon=True,
     ).start()
 
     return task
+
+
+@app.get("/api/settings/telegram")
+def get_telegram_settings():
+    chat_id, token = _db_get_telegram_defaults()
+    if chat_id is None and TELEGRAM_CHAT_ID:
+        chat_id = _clean_telegram_chat_id(TELEGRAM_CHAT_ID)
+    if token is None and TELEGRAM_BOT_TOKEN:
+        token = _clean_telegram_bot_token(TELEGRAM_BOT_TOKEN)
+    return {"telegram_chat_id": chat_id, "telegram_bot_token": token}
+
+
+@app.post("/api/settings/telegram")
+def set_telegram_settings(
+    telegramChatId: str = Form(""),
+    telegramBotToken: str = Form(""),
+):
+    resolved_chat_id = _clean_telegram_chat_id(telegramChatId)
+    resolved_token = _clean_telegram_bot_token(telegramBotToken)
+    _db_set_setting("telegram_chat_id", resolved_chat_id)
+    _db_set_setting("telegram_bot_token", resolved_token)
+    return {"ok": True, "telegram_chat_id": resolved_chat_id, "telegram_bot_token": resolved_token}
 
 
 @app.get("/api/tasks")
@@ -1159,6 +1470,8 @@ def task_rows(task_id: str, page: int = 1, page_size: int = 25, status: str = "a
         "queued": 0,
         "retry": 0,
         "ok": 0,
+        "registered": 0,
+        "unregistered": 0,
         "unknown": 0,
         "error": 0,
     }
@@ -1176,6 +1489,10 @@ def task_rows(task_id: str, page: int = 1, page_size: int = 25, status: str = "a
         status_filters.append({"key": "retry", "label": "Retry", "count": status_counts["retry"]})
     if status_counts.get("ok"):
         status_filters.append({"key": "ok", "label": "Success", "count": status_counts["ok"]})
+    if status_counts.get("registered"):
+        status_filters.append({"key": "registered", "label": "Registered", "count": status_counts["registered"]})
+    if status_counts.get("unregistered"):
+        status_filters.append({"key": "unregistered", "label": "Unregistered", "count": status_counts["unregistered"]})
     if status_counts.get("error"):
         status_filters.append({"key": "error", "label": "Errors", "count": status_counts["error"]})
     if status_counts.get("unknown"):
@@ -1188,9 +1505,9 @@ def task_rows(task_id: str, page: int = 1, page_size: int = 25, status: str = "a
 
     summary = {
         "total": total_rows,
-        "processed": status_counts["ok"] + status_counts["error"] + status_counts["unknown"] + status_counts["retry"],
-        "success": status_counts["ok"],
-        "failed": status_counts["error"],
+        "processed": status_counts["ok"] + status_counts["registered"] + status_counts["error"] + status_counts["unregistered"] + status_counts["unknown"] + status_counts["retry"],
+        "success": status_counts["ok"] + status_counts["registered"],
+        "failed": status_counts["error"] + status_counts["unregistered"],
         "visible": visible_rows,
     }
 
@@ -1235,38 +1552,12 @@ def download_task_xlsx(task_id: str):
         raise HTTPException(status_code=404, detail="Result json not ready")
 
     try:
-        from openpyxl import Workbook
-    except ImportError as exc:
+        xlsx_data = _build_task_xlsx_bytes(task_id)
+    except RuntimeError as exc:
         raise HTTPException(status_code=500, detail="openpyxl is required to export XLSX") from exc
 
-    with open(result_path, "r", encoding="utf-8") as file:
-        result_rows = json.load(file)
-
-    if isinstance(result_rows, dict):
-        result_rows = [result_rows]
-    if not isinstance(result_rows, list):
-        result_rows = []
-
-    flat_rows = [_build_csv_row(result) for result in result_rows]
-    headers: list[str] = []
-    for row in flat_rows:
-        for key in row.keys():
-            if key not in headers:
-                headers.append(key)
-
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Results"
-
-    if headers:
-        sheet.append(headers)
-        for row in flat_rows:
-            sheet.append([row.get(header, "") for header in headers])
-
-    buffer = BytesIO()
-    workbook.save(buffer)
     return Response(
-        buffer.getvalue(),
+        xlsx_data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{task_id}_result.xlsx"'},
     )

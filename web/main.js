@@ -6,6 +6,13 @@ function readStorage(key, fallback = "") {
   }
 }
 
+function maskTelegramToken(token) {
+  if (!token || token.length < 8) {
+    return "•••";
+  }
+  return `${token.slice(0, 4)}...${token.slice(-4)}`;
+}
+
 function writeStorage(key, value) {
   try {
     localStorage.setItem(key, value);
@@ -49,6 +56,7 @@ const tabButtons = document.querySelectorAll(".tab-btn");
 const tabPanels = {
   proxies: document.getElementById("proxies-tab"),
   tasks: document.getElementById("tasks-tab"),
+  "telegram-settings": document.getElementById("telegram-settings-tab"),
 };
 
 const taskSearchInput = document.getElementById("taskSearchInput");
@@ -84,12 +92,41 @@ const taskRowsPrevBtn = document.getElementById("taskRowsPrevBtn");
 const taskRowsNextBtn = document.getElementById("taskRowsNextBtn");
 const taskJsonLink = document.getElementById("taskJsonLink");
 const taskXlsxLink = document.getElementById("taskXlsxLink");
+const telegramSettingsForm = document.getElementById("telegramSettingsForm");
+const telegramSettingsChatIdInput = document.getElementById("telegramSettingsChatIdInput");
+const telegramSettingsBotTokenInput = document.getElementById("telegramSettingsBotTokenInput");
+const telegramSettingsStatus = document.getElementById("telegramSettingsStatus");
 const taskRefreshDetailBtn = document.getElementById("taskRefreshDetailBtn");
 const taskCopyIdBtn = document.getElementById("taskCopyIdBtn");
 const taskCardTemplate = document.getElementById("task-card-template");
 
 let activeTab = "proxies";
 let taskRowsSearchDebounce = null;
+
+if (telegramSettingsChatIdInput) {
+  telegramSettingsChatIdInput.value = readStorage("telegramChatId", "");
+}
+if (telegramSettingsBotTokenInput) {
+  telegramSettingsBotTokenInput.value = readStorage("telegramBotToken", "");
+}
+
+function hydrateTelegramDefaultsFromTask(task) {
+  if (!task) return;
+  if (telegramSettingsChatIdInput && !telegramSettingsChatIdInput.value && task.telegram_chat_id) {
+    telegramSettingsChatIdInput.value = task.telegram_chat_id;
+    writeStorage("telegramChatId", task.telegram_chat_id);
+  }
+  if (telegramSettingsBotTokenInput && !telegramSettingsBotTokenInput.value && task.telegram_bot_token) {
+    telegramSettingsBotTokenInput.value = task.telegram_bot_token;
+    writeStorage("telegramBotToken", task.telegram_bot_token);
+  }
+}
+
+function setTelegramStatus(message, isError = false) {
+  if (!telegramSettingsStatus) return;
+  telegramSettingsStatus.textContent = message;
+  telegramSettingsStatus.style.color = isError ? "#fca5a5" : "";
+}
 
 function setActiveTab(tabName) {
   activeTab = tabName;
@@ -402,16 +439,19 @@ function formatRowStatusLabel(row) {
   if (row.status_label) return row.status_label;
   if (row.status_key === "queued") return "Queued";
   if (row.status_key === "retry") return "Retry";
+  if (row.status_key === "registered") return "Registered";
+  if (row.status_key === "unregistered") return "Unregistered";
   if (row.ok) return "OK";
   if (row.status_key === "unknown" || row.status === null || row.status === undefined || row.status === "") return "Unknown";
   return `HTTP ${row.status}`;
 }
 
 function rowStatusClass(row) {
-  if (row.status_key === "ok" || row.ok) return "is-ok";
+  if (row.status_key === "ok" || row.status_key === "registered" || row.ok) return "is-ok";
   if (row.status_key === "queued") return "is-queued";
   if (row.status_key === "retry") return "is-retry";
   if (row.status_key === "unknown") return "is-unknown";
+  if (row.status_key === "unregistered") return "is-bad";
   return "is-bad";
 }
 
@@ -542,6 +582,8 @@ function renderTaskInspector() {
     `Pause ${task.pause_min}s–${task.pause_max}s`,
     task.use_proxy ? `Proxies ${task.proxy_count || 0}` : "No proxies",
     task.max_rows ? `Max rows ${task.max_rows}` : "No limit",
+    task.telegram_chat_id ? `Telegram chat ${task.telegram_chat_id}` : null,
+    task.telegram_bot_token ? `Telegram token ${maskTelegramToken(task.telegram_bot_token)}` : null,
     view.error ? `Update error: ${view.error}` : null,
   ].filter(Boolean);
 
@@ -676,6 +718,8 @@ async function loadTasks() {
   });
   const previousSelectedTaskId = state.selectedTaskId;
   state.tasks = map;
+  const latestTask = Object.values(state.tasks).sort((a, b) => taskTimeValue(b) - taskTimeValue(a))[0] || null;
+  hydrateTelegramDefaultsFromTask(latestTask);
 
   ensureSelectedTask();
   if (previousSelectedTaskId && previousSelectedTaskId !== state.selectedTaskId) {
@@ -685,8 +729,34 @@ async function loadTasks() {
   await refreshSelectedTaskRows(true);
 }
 
+async function loadTelegramSettings() {
+  if (telegramSettingsChatIdInput && !telegramSettingsChatIdInput.value) {
+    telegramSettingsChatIdInput.value = readStorage("telegramChatId", "");
+  }
+  if (telegramSettingsBotTokenInput && !telegramSettingsBotTokenInput.value) {
+    telegramSettingsBotTokenInput.value = readStorage("telegramBotToken", "");
+  }
+
+  try {
+    const data = await api("/api/settings/telegram");
+    if (telegramSettingsChatIdInput && data?.telegram_chat_id) {
+      telegramSettingsChatIdInput.value = data.telegram_chat_id;
+      writeStorage("telegramChatId", data.telegram_chat_id);
+    }
+    if (telegramSettingsBotTokenInput && data?.telegram_bot_token) {
+      telegramSettingsBotTokenInput.value = data.telegram_bot_token;
+      writeStorage("telegramBotToken", data.telegram_bot_token);
+    }
+    if (data?.telegram_chat_id || data?.telegram_bot_token) {
+      setTelegramStatus("Loaded saved Telegram settings.");
+    }
+  } catch (error) {
+    setTelegramStatus(error.message ? `Could not load settings: ${error.message}` : "Could not load settings");
+  }
+}
+
 async function loadState() {
-  await Promise.all([loadProxies(), loadTasks()]);
+  await Promise.all([loadProxies(), loadTasks(), loadTelegramSettings()]);
   renderProxyList();
 }
 
@@ -719,6 +789,17 @@ document.getElementById("taskCreateForm").addEventListener("submit", async (even
     return;
   }
 
+  const telegramChatId = telegramSettingsChatIdInput ? telegramSettingsChatIdInput.value.trim() : "";
+  const telegramBotToken = telegramSettingsBotTokenInput ? telegramSettingsBotTokenInput.value.trim() : "";
+  if (telegramChatId) {
+    fd.set("telegramChatId", telegramChatId);
+    writeStorage("telegramChatId", telegramChatId);
+  }
+  if (telegramBotToken) {
+    fd.set("telegramBotToken", telegramBotToken);
+    writeStorage("telegramBotToken", telegramBotToken);
+  }
+
   try {
     const task = await api("/api/tasks", {
       method: "POST",
@@ -729,6 +810,13 @@ document.getElementById("taskCreateForm").addEventListener("submit", async (even
       state.selectedTaskId = task.id;
       writeStorage("selectedTaskId", task.id);
     }
+    if (task?.telegram_chat_id) {
+      writeStorage("telegramChatId", task.telegram_chat_id);
+    }
+    if (task?.telegram_bot_token) {
+      writeStorage("telegramBotToken", task.telegram_bot_token);
+    }
+    hydrateTelegramDefaultsFromTask(task);
   } catch (err) {
     alert(err.message);
     return;
@@ -739,6 +827,39 @@ document.getElementById("taskCreateForm").addEventListener("submit", async (even
   setStep(3);
   await loadState();
 });
+
+if (telegramSettingsForm) {
+  telegramSettingsForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+
+    const chatId = telegramSettingsChatIdInput ? telegramSettingsChatIdInput.value.trim() : "";
+    const botToken = telegramSettingsBotTokenInput ? telegramSettingsBotTokenInput.value.trim() : "";
+    formData.set("telegramChatId", chatId);
+    formData.set("telegramBotToken", botToken);
+
+    try {
+      const response = await api("/api/settings/telegram", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (response?.telegram_chat_id) {
+        writeStorage("telegramChatId", response.telegram_chat_id);
+      } else {
+        writeStorage("telegramChatId", "");
+      }
+      if (response?.telegram_bot_token) {
+        writeStorage("telegramBotToken", response.telegram_bot_token);
+      } else {
+        writeStorage("telegramBotToken", "");
+      }
+      setTelegramStatus("Telegram settings saved.");
+    } catch (error) {
+      setTelegramStatus(error.message || "Failed to save settings", true);
+    }
+  });
+}
 
 if (taskSearchInput) {
   taskSearchInput.value = state.taskSearch;
