@@ -50,6 +50,45 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
 ]
 
+BLOCKED_RESPONSE_MARKERS = (
+    "blocked",
+    "forbidden",
+    "rate limit",
+    "too many requests",
+    "access denied",
+    "suspicious",
+    "captcha",
+    "challenge",
+    "security",
+    "temporarily unavailable",
+    "waf",
+)
+
+NOT_FOUND_RESPONSE_MARKERS = (
+    "not found",
+    "not_found",
+    "could not be found",
+    "could not find",
+    "does not exist",
+    "no record",
+    "unknown user",
+    "not in our records",
+)
+
+
+def _is_blocked_body(body: str | None) -> bool:
+    lowered = (body or "").lower()
+    if not lowered:
+        return False
+    return any(marker in lowered for marker in BLOCKED_RESPONSE_MARKERS)
+
+
+def _is_not_found_body(body: str | None) -> bool:
+    lowered = (body or "").lower()
+    if not lowered:
+        return False
+    return any(marker in lowered for marker in NOT_FOUND_RESPONSE_MARKERS)
+
 
 def _playwright_context():
     if Stealth is None:
@@ -137,7 +176,7 @@ def _to_payload_row(row_cells: dict[str, str]) -> dict[str, str] | None:
     }
 
 
-def _normalize_status_code(status_code: int | None) -> str:
+def _normalize_status_code(status_code: int | None, body: str | None = None) -> str:
     if status_code == 403:
         return "registered"
     if status_code == 201:
@@ -145,6 +184,10 @@ def _normalize_status_code(status_code: int | None) -> str:
     if status_code == 200:
         return "ok"
     if status_code == 404:
+        if _is_blocked_body(body):
+            return "blocked"
+        if _is_not_found_body(body):
+            return "not_found"
         return "not_found"
     if status_code is None:
         return "unknown"
@@ -556,7 +599,10 @@ def _build_csv_row(result: dict) -> dict:
         "public_ip_via_proxy": result.get("public_ip_via_proxy"),
         "registration_status": (
             result.get("verify", {}).get("status_label")
-            or _normalize_status_code(result.get("verify", {}).get("status"))
+            or _normalize_status_code(
+                result.get("verify", {}).get("status"),
+                result.get("verify", {}).get("body"),
+            )
         ),
         "a": heap.get("a"),
         "u": heap.get("u"),
@@ -621,10 +667,11 @@ def _verify_register_post(
         with opener.open(req, timeout=30) as response:
             status = response.getcode()
             raw = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
+            status_label = _normalize_status_code(status, raw)
             return {
                 "status": status,
                 "ok": _is_verify_ok(status),
-                "status_label": _normalize_status_code(status),
+                "status_label": status_label,
                 "body": raw,
                 "content_type": response.headers.get("Content-Type"),
                 "set_cookie": response.headers.get("Set-Cookie"),
@@ -632,19 +679,21 @@ def _verify_register_post(
     except urllib.error.HTTPError as error:
         status = error.code
         body = error.read().decode("utf-8", errors="replace")
+        status_label = _normalize_status_code(status, body)
         return {
             "status": status,
             "ok": _is_verify_ok(status),
-            "status_label": _normalize_status_code(status),
+            "status_label": status_label,
             "body": body,
             "content_type": error.headers.get("Content-Type") if error.headers else None,
             "set_cookie": error.headers.get("Set-Cookie") if error.headers else None,
         }
     except Exception as exc:
+        status_label = _normalize_status_code(None, str(exc))
         return {
             "status": None,
             "ok": _is_verify_ok(None),
-            "status_label": _normalize_status_code(None),
+            "status_label": status_label,
             "body": str(exc),
             "content_type": None,
             "set_cookie": None,

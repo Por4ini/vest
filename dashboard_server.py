@@ -538,6 +538,39 @@ def _load_task_payload_rows(task: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(row) for row in cached_rows]
 
 
+BLOCKED_RESPONSE_MARKERS = (
+    "blocked",
+    "forbidden",
+    "access denied",
+    "too many requests",
+    "rate limit",
+    "captcha",
+    "challenge",
+    "waf",
+    "security",
+    "suspicious",
+    "temporarily unavailable",
+)
+
+NOT_FOUND_RESPONSE_MARKERS = (
+    "not found",
+    "not_found",
+    "could not be found",
+    "could not find",
+    "does not exist",
+    "no record",
+    "unknown user",
+    "not in our records",
+)
+
+
+def _is_blocked_body(body: str | None) -> bool:
+    lowered = (body or "").lower()
+    if not lowered:
+        return False
+    return any(marker in lowered for marker in BLOCKED_RESPONSE_MARKERS)
+
+
 def _row_status_key(processed_row: dict[str, Any] | None) -> str:
     if not processed_row:
         return "queued"
@@ -547,6 +580,8 @@ def _row_status_key(processed_row: dict[str, Any] | None) -> str:
     if status_code == 201:
         return "unregistered"
     if status_code == 404:
+        if _is_blocked_body(processed_row.get("body_preview")):
+            return "blocked"
         return "not_found"
     if processed_row.get("ok"):
         return "ok"
@@ -788,7 +823,13 @@ def _db_update_task_metrics(task_id: str, event: dict[str, Any]) -> None:
             if etype == "row_finished":
                 ok = bool(event.get("ok"))
                 status_code = _coerce_status_code(event.get("status"))
-                status_key = _row_status_key({"ok": ok, "status": status_code})
+                status_key = _row_status_key(
+                    {
+                        "ok": ok,
+                        "status": status_code,
+                        "body_preview": event.get("body_preview"),
+                    }
+                )
                 status_label = _row_status_label(status_key, status_code)
                 if status_code == 202:
                     last_message = f"HTTP 202 for row {event.get('row')} - retry required"
@@ -1479,6 +1520,7 @@ def task_rows(task_id: str, page: int = 1, page_size: int = 25, status: str = "a
         "registered": 0,
         "unregistered": 0,
         "not_found": 0,
+        "blocked": 0,
         "unknown": 0,
         "error": 0,
     }
@@ -1502,6 +1544,8 @@ def task_rows(task_id: str, page: int = 1, page_size: int = 25, status: str = "a
         status_filters.append({"key": "unregistered", "label": "Unregistered", "count": status_counts["unregistered"]})
     if status_counts.get("not_found"):
         status_filters.append({"key": "not_found", "label": "Not found", "count": status_counts["not_found"]})
+    if status_counts.get("blocked"):
+        status_filters.append({"key": "blocked", "label": "Blocked", "count": status_counts["blocked"]})
     if status_counts.get("error"):
         status_filters.append({"key": "error", "label": "Errors", "count": status_counts["error"]})
     if status_counts.get("unknown"):
@@ -1514,9 +1558,16 @@ def task_rows(task_id: str, page: int = 1, page_size: int = 25, status: str = "a
 
     summary = {
         "total": total_rows,
-        "processed": status_counts["ok"] + status_counts["registered"] + status_counts["error"] + status_counts["unregistered"] + status_counts["not_found"] + status_counts["unknown"] + status_counts["retry"],
+        "processed": status_counts["ok"]
+        + status_counts["registered"]
+        + status_counts["error"]
+        + status_counts["unregistered"]
+        + status_counts["not_found"]
+        + status_counts["blocked"]
+        + status_counts["unknown"]
+        + status_counts["retry"],
         "success": status_counts["ok"] + status_counts["registered"],
-        "failed": status_counts["error"] + status_counts["unregistered"] + status_counts["not_found"],
+        "failed": status_counts["error"] + status_counts["unregistered"] + status_counts["not_found"] + status_counts["blocked"],
         "visible": visible_rows,
     }
 
