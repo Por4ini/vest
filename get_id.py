@@ -144,7 +144,24 @@ def _normalize_cell_value(value):
     return str(value).strip()
 
 
-def _to_payload_row(row_cells: dict[str, str]) -> dict[str, str] | None:
+def _normalize_birth_date(value: Any) -> str:
+    normalized = _normalize_cell_value(value)
+    if not normalized:
+        return ""
+
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%m-%d-%Y", "%m-%d-%y", "%d/%m/%Y", "%d/%m/%y"):
+        try:
+            return datetime.strptime(normalized, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+
+    return normalized
+
+
+def _to_payload_row(
+    row_cells: dict[str, str],
+    row_values: tuple[Any, ...] | list[Any] | None = None,
+) -> dict[str, str] | None:
     birth = (
         row_cells.get("birthdate")
         or row_cells.get("birth")
@@ -167,10 +184,18 @@ def _to_payload_row(row_cells: dict[str, str]) -> dict[str, str] | None:
     )
 
     if not (birth and last and ssn):
+        if row_values is not None:
+            ordered_values = [_normalize_cell_value(value) for value in row_values]
+            if len(ordered_values) >= 3:
+                last = last or ordered_values[0]
+                birth = birth or ordered_values[1]
+                ssn = ssn or ordered_values[2]
+
+    if not (birth and last and ssn):
         return None
 
     return {
-        "birthDate": birth,
+        "birthDate": _normalize_birth_date(birth),
         "lastName": last,
         "ssn": ssn,
     }
@@ -228,7 +253,7 @@ def _load_payload_rows(xlsx_path: str, max_rows: int | None = None) -> list[dict
             if not header_name:
                 continue
             row_dict[header_name] = _normalize_cell_value(cell)
-        payload = _to_payload_row(row_dict)
+        payload = _to_payload_row(row_dict, values)
         if payload:
             payload_rows.append(
                 {
