@@ -441,6 +441,8 @@ function formatRowStatusLabel(row) {
   if (row.status_key === "retry") return "Retry";
   if (row.status_key === "registered") return "Registered";
   if (row.status_key === "unregistered") return "Unregistered";
+  if (row.status_key === "not_found") return "Not found";
+  if (row.status_key === "blocked") return "Blocked";
   if (row.ok) return "OK";
   if (row.status_key === "unknown" || row.status === null || row.status === undefined || row.status === "") return "Unknown";
   return `HTTP ${row.status}`;
@@ -451,7 +453,9 @@ function rowStatusClass(row) {
   if (row.status_key === "queued") return "is-queued";
   if (row.status_key === "retry") return "is-retry";
   if (row.status_key === "unknown") return "is-unknown";
+  if (row.status_key === "not_found") return "is-bad";
   if (row.status_key === "unregistered") return "is-bad";
+  if (row.status_key === "blocked") return "is-bad";
   return "is-bad";
 }
 

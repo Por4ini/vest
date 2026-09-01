@@ -144,6 +144,8 @@ def _normalize_status_code(status_code: int | None) -> str:
         return "unregistered"
     if status_code == 200:
         return "ok"
+    if status_code == 404:
+        return "not_found"
     if status_code is None:
         return "unknown"
     return str(status_code)
@@ -402,7 +404,8 @@ def run_from_payload_table(
         payload_row = work_item["payload_row"]
         row_number = work_item["row_number"]
         retry_count = int(work_item.get("retry_count") or 0)
-        proxy = proxies[(row_number - 1) % len(proxies)] if proxies else None
+        proxy_index = row_number - 1 + retry_count
+        proxy = proxies[proxy_index % len(proxies)] if proxies else None
 
         payload = payload_row["payload"]
         row_payload = {

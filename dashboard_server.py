@@ -546,6 +546,8 @@ def _row_status_key(processed_row: dict[str, Any] | None) -> str:
         return "registered"
     if status_code == 201:
         return "unregistered"
+    if status_code == 404:
+        return "not_found"
     if processed_row.get("ok"):
         return "ok"
     if status_code == 202:
@@ -564,6 +566,10 @@ def _row_status_label(status_key: str, status_code: int | None) -> str:
         return "Registered"
     if status_key == "unregistered":
         return "Unregistered"
+    if status_key == "not_found":
+        return "Not found"
+    if status_key == "blocked":
+        return "Blocked"
     if status_key == "retry":
         return "Retry"
     if status_key == "unknown":
@@ -1472,6 +1478,7 @@ def task_rows(task_id: str, page: int = 1, page_size: int = 25, status: str = "a
         "ok": 0,
         "registered": 0,
         "unregistered": 0,
+        "not_found": 0,
         "unknown": 0,
         "error": 0,
     }
@@ -1493,6 +1500,8 @@ def task_rows(task_id: str, page: int = 1, page_size: int = 25, status: str = "a
         status_filters.append({"key": "registered", "label": "Registered", "count": status_counts["registered"]})
     if status_counts.get("unregistered"):
         status_filters.append({"key": "unregistered", "label": "Unregistered", "count": status_counts["unregistered"]})
+    if status_counts.get("not_found"):
+        status_filters.append({"key": "not_found", "label": "Not found", "count": status_counts["not_found"]})
     if status_counts.get("error"):
         status_filters.append({"key": "error", "label": "Errors", "count": status_counts["error"]})
     if status_counts.get("unknown"):
@@ -1505,9 +1514,9 @@ def task_rows(task_id: str, page: int = 1, page_size: int = 25, status: str = "a
 
     summary = {
         "total": total_rows,
-        "processed": status_counts["ok"] + status_counts["registered"] + status_counts["error"] + status_counts["unregistered"] + status_counts["unknown"] + status_counts["retry"],
+        "processed": status_counts["ok"] + status_counts["registered"] + status_counts["error"] + status_counts["unregistered"] + status_counts["not_found"] + status_counts["unknown"] + status_counts["retry"],
         "success": status_counts["ok"] + status_counts["registered"],
-        "failed": status_counts["error"] + status_counts["unregistered"],
+        "failed": status_counts["error"] + status_counts["unregistered"] + status_counts["not_found"],
         "visible": visible_rows,
     }
 
